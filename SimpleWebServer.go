@@ -24,7 +24,10 @@ type Entry struct{
 var pwdSet map[int]Entry
 
 func main() {
-	fmt.Println("Starting simple web server")
+	log.SetPrefix("LOG: ")
+	log.SetFlags(log.Ldate | log.Lmicroseconds | log.Llongfile)
+	log.Println("Starting simple web server")
+	fmt.Println("Starting new simple server")
 
 	idleConnsClosed = make(chan struct{})
 	//Create the default mux
@@ -47,15 +50,13 @@ func main() {
 	pwdSet = make(map[int]Entry)
 
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-		// Error starting or closing listener:
-		log.Printf("HTTP server ListenAndServe: %v", err)
+		log.Println("HTTP server ListenAndServe: %v", err)
 	}
 
-	fmt.Println("Finishing up simple web server")
+	log.Println("Finishing up simple web server")
 }
 
 func hashReturnHandler(res http.ResponseWriter, req *http.Request) {
-	fmt.Println("Received dynamic URL ")
 	var data = []byte("")
 	if len(req.RequestURI) == 0{
 		return
@@ -99,20 +100,19 @@ func convertToId(str string, recId *int) bool{
 
 func hashHandler(res http.ResponseWriter, req *http.Request){
 
-	fmt.Println("Received new client")
+	log.Println("Received new client")
 	var data = []byte("")
 	if req.Method != "POST" {
 		return
 	}
 
 	if err := req.ParseForm(); err != nil {
-		fmt.Println("ParseForm() err: ", err)
+		log.Println("ParseForm() err: ", err)
 		return
 	}
 
 	name := req.FormValue("password")
 	if name != "" {
-		fmt.Println("password = ", name)
 		index := 0
 		addHashToSet([]byte (name), &index)
         data = []byte("Response: " + strconv.Itoa(index))
@@ -145,13 +145,14 @@ func getHashFromSetById(id int, pwdHash *string) bool{
 	sha512Hasher.Write(entry.password)
 	var hashedPasswordBytes = sha512Hasher.Sum(nil)
 	*pwdHash = base64.URLEncoding.EncodeToString(hashedPasswordBytes)
+	log.Println("Reporting hash = ", *pwdHash)
 	return true
 }
 
 
 func statHandler(res http.ResponseWriter, req *http.Request){
 
-	fmt.Println("Received new client")
+	log.Println("Received new client")
 	data := []byte("STATS is here")
 	if req.Method != "GET" {
 		return
@@ -163,7 +164,7 @@ func statHandler(res http.ResponseWriter, req *http.Request){
 
 func shutdownHandler(res http.ResponseWriter, req *http.Request){
 
-	fmt.Println("Shutting server down")
+	log.Println("Shutting server down")
 	if err := srv.Shutdown(context.Background()); err != nil {
 		// Error from closing listeners, or context timeout:
 		log.Printf("HTTP server Shutdown: %v", err)
