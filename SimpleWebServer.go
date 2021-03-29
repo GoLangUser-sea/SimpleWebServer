@@ -10,15 +10,21 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"encoding/json"
 )
 var srv http.Server
 var idleConnsClosed chan struct{}
-var connectionID = 0
 var hashTag = "/hash/"
+var totalTimeNanos time.Duration = 0
 
 type Entry struct{
 	password []byte
 	time int64
+}
+
+type Stat struct {
+	Total int
+	Average int64
 }
 
 var pwdSet map[int]Entry
@@ -99,8 +105,8 @@ func convertToId(str string, recId *int) bool{
 }
 
 func hashHandler(res http.ResponseWriter, req *http.Request){
-
 	log.Println("Received new client")
+	start := time.Now()
 	var data = []byte("")
 	if req.Method != "POST" {
 		return
@@ -121,6 +127,7 @@ func hashHandler(res http.ResponseWriter, req *http.Request){
 	res.Header().Set("Content-Type", "application/text")
 	res.WriteHeader(200)
 	res.Write(data)
+	totalTimeNanos += time.Since(start)
 }
 
 func addHashToSet(password []byte, index *int) bool{
@@ -152,14 +159,30 @@ func getHashFromSetById(id int, pwdHash *string) bool{
 
 func statHandler(res http.ResponseWriter, req *http.Request){
 
-	log.Println("Received new client")
-	data := []byte("STATS is here")
 	if req.Method != "GET" {
 		return
 	}
+	log.Println("Received GET STAT request")
+
+	totalCount := len(pwdSet)
+	if totalCount == 0{
+		return
+	}
+	var averageTime = totalTimeNanos / (time.Microsecond  * time.Duration(totalCount))
+	var stat Stat
+
+	stat.Average = int64(averageTime)
+	stat.Total   = totalCount
+
+	out, err := json.MarshalIndent(&stat, "", "     ")
+    if err != nil {
+    	return
+	}
+
+	log.Println(string(out))
 	res.Header().Set("Content-Type", "application/text")
 	res.WriteHeader(200)
-	res.Write(data)
+	res.Write(out)
 }
 
 func shutdownHandler(res http.ResponseWriter, req *http.Request){
