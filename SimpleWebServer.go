@@ -2,20 +2,16 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
-	"fmt"
 	"crypto/sha512"
+	"encoding/base64"
+	"encoding/json"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
-	"encoding/json"
 )
-var srv http.Server
-var idleConnsClosed chan struct{}
-var hashTag = "/hash/"
-var totalTimeNanos time.Duration = 0
 
 type Entry struct{
 	password []byte
@@ -24,26 +20,29 @@ type Entry struct{
 
 type Stat struct {
 	Total int
-	Average int64
+	Average time.Duration
 }
 
 var pwdSet map[int]Entry
+var hashTag = "/hash/"
+var totalTimeNanos time.Duration = 0
+var mutex = &sync.Mutex{}
 
 func main() {
 	log.SetPrefix("LOG: ")
 	log.SetFlags(log.Ldate | log.Lmicroseconds | log.Llongfile)
 	log.Println("Starting simple web server")
-	fmt.Println("Starting new simple server")
 
-	idleConnsClosed = make(chan struct{})
-	//Create the default mux
+	shutdownNow := make(chan bool,1)
+	pwdSet = make(map[int]Entry)
+
 	mux := http.NewServeMux()
 
-
 	mux.HandleFunc("/hash", hashHandler)
-	mux.HandleFunc(hashTag, hashReturnHandler)
+	mux.HandleFunc(hashTag, requestHashByIDHandler)
 	mux.HandleFunc("/stats", statHandler)
-	mux.HandleFunc("/shutdown", shutdownHandler)
+	mux.HandleFunc("/shutdown", func(res http.ResponseWriter, req *http.Request) {
+		shutdownNow <- true	})
 
 	srv := &http.Server{
 		Addr:           ":8080",
@@ -53,16 +52,23 @@ func main() {
 		MaxHeaderBytes: 1 << 20,
 	}
 
-	pwdSet = make(map[int]Entry)
+	go func() {
+		<-shutdownNow
+		log.Println("Server is shutting down ..")
+		if err := srv.Shutdown(context.Background()); err != nil {
+			// Error from closing listeners, or context timeout:
+			log.Printf("HTTP server Shutting down: %v", err)
+		}
+		close(shutdownNow)
+	}()
 
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-		log.Println("HTTP server ListenAndServe: %v", err)
+		log.Printf("HTTP server ListenAndServe: %v\n", err)
 	}
-
-	log.Println("Finishing up simple web server")
+	log.Println("Sever exited")
 }
 
-func hashReturnHandler(res http.ResponseWriter, req *http.Request) {
+func requestHashByIDHandler(res http.ResponseWriter, req *http.Request) {
 	var data = []byte("")
 	if len(req.RequestURI) == 0{
 		return
@@ -81,17 +87,17 @@ func hashReturnHandler(res http.ResponseWriter, req *http.Request) {
 	data = []byte("Response: " + pwdHash)
 	res.Header().Set("Content-Type", "application/text")
 	res.WriteHeader(200)
-	res.Write(data)
+	_, _ = res.Write(data)
 }
 
 func convertToId(str string, recId *int) bool{
 	token := strings.TrimPrefix(str,hashTag)
-	if (len(token) == 0){
+	if len(token) == 0 {
 		return false
 	}
 
 	id := strings.Split(token,"/")
-	if (len(id) == 0){
+	if len(id) == 0 {
 		return false
 	}
 
@@ -105,9 +111,8 @@ func convertToId(str string, recId *int) bool{
 }
 
 func hashHandler(res http.ResponseWriter, req *http.Request){
-	log.Println("Received new client")
+	log.Println("Received new client password")
 	start := time.Now()
-	var data = []byte("")
 	if req.Method != "POST" {
 		return
 	}
@@ -118,6 +123,7 @@ func hashHandler(res http.ResponseWriter, req *http.Request){
 	}
 
 	name := req.FormValue("password")
+	var data = []byte("")
 	if name != "" {
 		index := 0
 		addHashToSet([]byte (name), &index)
@@ -126,14 +132,16 @@ func hashHandler(res http.ResponseWriter, req *http.Request){
 
 	res.Header().Set("Content-Type", "application/text")
 	res.WriteHeader(200)
-	res.Write(data)
+	_, _ = res.Write(data)
 	totalTimeNanos += time.Since(start)
 }
 
 func addHashToSet(password []byte, index *int) bool{
+	mutex.Lock()
+	defer mutex.Unlock()
+
 	var t =time.Now().Unix()
-	var i = len(pwdSet)
-	pwdSet[i] = Entry{password,t}
+	pwdSet[len(pwdSet)] = Entry{password,t}
 	*index = len(pwdSet)
 	return true
 }
@@ -143,6 +151,9 @@ func getHashFromSetById(id int, pwdHash *string) bool{
 		return false
 	}
 
+	mutex.Lock()
+	defer mutex.Unlock()
+
 	var entry = pwdSet[id-1]
 	if (time.Now().Unix()- entry.time) < 5 {
 		return false
@@ -150,12 +161,12 @@ func getHashFromSetById(id int, pwdHash *string) bool{
 
 	var sha512Hasher = sha512.New()
 	sha512Hasher.Write(entry.password)
+
 	var hashedPasswordBytes = sha512Hasher.Sum(nil)
 	*pwdHash = base64.URLEncoding.EncodeToString(hashedPasswordBytes)
 	log.Println("Reporting hash = ", *pwdHash)
 	return true
 }
-
 
 func statHandler(res http.ResponseWriter, req *http.Request){
 
@@ -168,10 +179,9 @@ func statHandler(res http.ResponseWriter, req *http.Request){
 	if totalCount == 0{
 		return
 	}
-	var averageTime = totalTimeNanos / (time.Microsecond  * time.Duration(totalCount))
-	var stat Stat
 
-	stat.Average = int64(averageTime)
+	var stat Stat
+	stat.Average = totalTimeNanos / (time.Microsecond  * time.Duration(totalCount))
 	stat.Total   = totalCount
 
 	out, err := json.MarshalIndent(&stat, "", "     ")
@@ -182,15 +192,5 @@ func statHandler(res http.ResponseWriter, req *http.Request){
 	log.Println(string(out))
 	res.Header().Set("Content-Type", "application/text")
 	res.WriteHeader(200)
-	res.Write(out)
-}
-
-func shutdownHandler(res http.ResponseWriter, req *http.Request){
-
-	log.Println("Shutting server down")
-	if err := srv.Shutdown(context.Background()); err != nil {
-		// Error from closing listeners, or context timeout:
-		log.Printf("HTTP server Shutdown: %v", err)
-	}
-	close(idleConnsClosed)
+	_, _ = res.Write(out)
 }
